@@ -1,4 +1,3 @@
-
 import sys
 from os import path
 # This is used so the agent can see the environment and game components
@@ -20,7 +19,6 @@ import random
 from env.network_security_game import NetworkSecurityEnvironment
 from os import path
 
-
 import mlflow
 
 # This is used so the agent can see the environment and game components
@@ -37,7 +35,90 @@ class GeneticAgent(BaseAgent):
 
     def __init__(self, host, port,role, seed) -> None:
         super().__init__(host, port, role)
+
+    def generate_valid_actions_separated(self,state: GameState)->list:
+        """Function that generates a list of all valid actions in a given state"""
+        valid_scan_network = set()
+        valid_find_services = set()
+        valid_exploit_service = set()
+        valid_find_data = set()
+        valid_exfiltrate_data = set()
+
+        for src_host in state.controlled_hosts:
+            #Network Scans
+            for network in state.known_networks:
+                # TODO ADD neighbouring networks
+                valid_scan_network.add(Action(ActionType.ScanNetwork, params={"target_network": network, "source_host": src_host,}))
+            # Service Scans
+            for host in state.known_hosts:
+                valid_find_services.add(Action(ActionType.FindServices, params={"target_host": host, "source_host": src_host,}))
+            # Service Exploits
+            for host, service_list in state.known_services.items():
+                for service in service_list:
+                    valid_exploit_service.add(Action(ActionType.ExploitService, params={"target_host": host,"target_service": service,"source_host": src_host,}))
+        # Data Scans
+        for host in state.controlled_hosts:
+            valid_find_data.add(Action(ActionType.FindData, params={"target_host": host, "source_host": host}))
+
+        # Data Exfiltration
+        for src_host, data_list in state.known_data.items():
+            for data in data_list:
+                for trg_host in state.controlled_hosts:
+                    if trg_host != src_host:
+                        valid_exfiltrate_data.add(Action(ActionType.ExfiltrateData, params={"target_host": trg_host, "source_host": src_host, "data": data}))
+        return list(valid_scan_network), list(valid_find_services), list(valid_exploit_service), list(valid_find_data), list(valid_exfiltrate_data)
     
+    def select_action_greedy(self, observation: Observation, taken_actions) -> Action:
+        
+        valid_actions = self.generate_valid_actions_separated(observation.state)
+
+        i = len(valid_actions) - 1
+        action = None
+
+        while action is None:
+            if valid_actions[i] != []:
+                action = choice(valid_actions[i])
+                if action in taken_actions:
+                    valid_actions[i].remove(action)
+                    action = None
+            else:
+                i -= 1
+        return action
+    
+    def play_game_greedy(self, observation):
+        """
+        The main function for the gameplay. Handles agent registration and the main interaction loop.
+        """
+        num_steps = 0
+        actions = []
+        taken_actions = {}
+        episodic_returns = []
+        while observation and not observation.end:
+            num_steps += 1
+            # Store returns in the episode
+            episodic_returns.append(observation.reward)
+            # Select the action randomly
+            action = agent.select_action_greedy(observation, taken_actions)
+            taken_actions[action] = True
+            actions.append(action)
+            
+            observation = agent.make_step(action)
+            # To return
+        # actions needs to be of length max_steps
+        # select random actions to fill the rest of the list
+        #Arreglar 100 hardcoded
+        print("num_steps",  num_steps)
+
+        print("last observation info")
+        print(observation.info)
+        while len(actions) < 100:
+            valid_actions_separated = agent.generate_valid_actions_separated(observation.state)
+            action = choice(valid_actions_separated[0] + valid_actions_separated[1] + valid_actions_separated[2] + valid_actions_separated[3] + valid_actions_separated[4])
+            actions.append(action)
+        
+        return actions
+
+
 
     def play_game(self, observation, num_episodes=1):
         """
@@ -45,17 +126,17 @@ class GeneticAgent(BaseAgent):
         """
         # Ideal population size: 1000
         # Ideal number of generations: 500
-        DEFAULT_POPULATION_SIZE = 100
-        DEFAULT_NUM_GENERATIONS = 100
+        DEFAULT_POPULATION_SIZE = 1000
+        DEFAULT_NUM_GENERATIONS = 80
         DEFAULT_REPLACEMENT = True
         DEFAULT_NUM_PER_TOURNAMENT = 5
         DEFAULT_N_POINTS = True
-        DEFAULT_NUM_POINTS = 3
+        DEFAULT_NUM_POINTS = 6
         DEFAULT_P_VALUE = 0.5
         DEFAULT_CROSS_PROB = 1.0
         DEFAULT_PARAMETER_MUTATION = False
         DEFAULT_MUTATION_PROB = 0.0333
-        DEFAULT_NUM_REPLACE = 25
+        DEFAULT_NUM_REPLACE = 50
         DEFAULT_PATH_GENETIC = "./genetic"
         DEFAULT_PATH_RESULTS = "./results"
 
@@ -67,7 +148,7 @@ class GeneticAgent(BaseAgent):
                 options = []
                 for _ in range(num_per_tournament):
                     options.append(random.choice(from_population))
-                chosen.append(max(options, key=lambda x:fitness_func(x,env.reset(),goal)[0])) # add [0] because fitness_eval_v3 returns a tuple
+                chosen.append(max(options, key=lambda x:fitness_func(x,agent.request_game_reset(),goal)[0])) # add [0] because fitness_eval_v3 returns a tuple
                 #chosen.append(max(options, key=lambda x:fitness_eval_v2(x,env.reset(),goal)))
                 if i==0 and parents_should_differ:
                     from_population.remove(chosen[0])
@@ -132,7 +213,6 @@ class GeneticAgent(BaseAgent):
             return child1, child2
         
 
-        #Arreglar (uso de num_steps)
         def fitness_eval_v02(individual, observation, num_steps = 0):
             #This function rewards when a changing state is observed, it does not care if the action is valid or not (e.g. FindServices on a host before doing the corresponding ScanNetwork is not valid, but it is possible and the state will probably change, so it is rewarded).
             #Furthermore, if the state does not change but the action is valid, it does not contribute to the reward.
@@ -153,17 +233,29 @@ class GeneticAgent(BaseAgent):
                 valid_actions = generate_valid_actions(current_state)
                 
                 if individual[i] in valid_actions:
-                    observation = self.make_step(individual[i])
+                    observation = agent.make_step(individual[i])
                 if num_steps is None:
                     num_steps = 0
                 num_steps += 1 
                 new_state = observation.state
+
+                
                 if current_state != new_state:
-                    reward += 10
                     num_good_actions += 1
+                    action_type = individual[i].type
+                    if action_type == ActionType.ScanNetwork:
+                        reward = 10
+                    elif action_type == ActionType.FindServices:
+                        reward = 20
+                    elif action_type == ActionType.ExploitService:
+                        reward = 50
+                    elif action_type == ActionType.FindData:
+                        reward = 75
+                    elif action_type == ActionType.ExfiltrateData:
+                        reward = 75
                 else:
                     if individual[i] in valid_actions:
-                        reward += 0
+                        reward += -10
                         num_boring_actions += 1
                     else:
                         reward += -100
@@ -173,9 +265,11 @@ class GeneticAgent(BaseAgent):
                 #print(reward)
             
 
-
             if "end_reason" in observation.info and observation.info["end_reason"] == "goal_reached":
                 reward_goal = 10000
+                won = 1
+            else:
+                won = 0
 
             final_reward = reward + reward_goal
             div_aux = num_steps - num_good_actions + num_bad_actions
@@ -191,7 +285,7 @@ class GeneticAgent(BaseAgent):
             else:
                 return_reward = final_reward 
             #print(return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps)
-            return return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps
+            return return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps, won
         
 
         def steady_state_selection(parents, parents_scores, offspring, offspring_scores, num_replace):
@@ -231,13 +325,9 @@ class GeneticAgent(BaseAgent):
             all_actions_by_type["ActionType.ExfiltrateData"] = ExfiltrateData_list
             return all_actions_by_type
         
-        ## Este es el de genetic_agent
         
         
-        # Tengo que acceder a la clase env sí o sí
 
-        # se usa en double q learning
-        # path.join(path.dirname(__file__), 'netsecenv-task.yaml')
         env = NetworkSecurityEnvironment(path.join(basePath, 'env', 'netsecenv_conf.yaml'))
         all_actions = env.get_all_actions()
         max_number_steps = env._max_steps
@@ -275,6 +365,12 @@ class GeneticAgent(BaseAgent):
         # Initialize population
         population = [[random.choice(all_actions) for _ in range(max_number_steps)] for _ in range(population_size)]
 
+        # Replace 10% of the population with greedy agents
+        for i in range(int(population_size/10)):
+            population[i] = agent.play_game_greedy(agent.request_game_reset())
+
+        print("Best initial fitness: ", max([fitness_eval_v02(individual, agent.request_game_reset(), 0)[0] for individual in population]))
+
         # Generations
 
         generation = 0
@@ -297,7 +393,11 @@ class GeneticAgent(BaseAgent):
                 best_score_complete = parents_scores[index_best_score, :]
                 #print(best_score_complete)
                 best_score = best_score_complete[0]
-                print("Best score: ", best_score)
+                print("ammount of individuals: ", len(parents_scores))
+                print("total good actions: ", np.sum(parents_scores[:,1]))
+                print("Best score complete: ", best_score_complete)
+                print("Worst score complete: ", np.min(parents_scores, axis=0))
+                print("Average score complete: ", np.mean(parents_scores, axis=0))
                 metrics_mean = np.mean(parents_scores, axis=0)
                 metrics_std = np.std(parents_scores, axis=0)
                 #print(best_score,metrics_mean,metrics_std)
@@ -399,10 +499,7 @@ if __name__ == '__main__':
     parser.add_argument("--evaluate", help="Evaluate the agent and report, instead of playing the game only once.", default=True)
     args = parser.parse_args()
 
-    if not os.path.exists(args.logdir):
-        os.makedirs(args.logdir)
-    logging.basicConfig(filename=os.path.join(args.logdir, "random_agent.log"), filemode='w', format='%(asctime)s %(name)s %(levelname)s %(message)s', datefmt='%H:%M:%S',level=logging.INFO)
-
+ 
     # Create agent
     agent = GeneticAgent(args.host, args.port,"Attacker", seed=42)
 
