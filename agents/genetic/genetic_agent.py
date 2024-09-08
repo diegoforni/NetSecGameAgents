@@ -35,6 +35,7 @@ class GeneticAgent(BaseAgent):
 
     def __init__(self, host, port,role, seed) -> None:
         super().__init__(host, port, role)
+        np.set_printoptions(suppress=True, precision=6)
 
     def generate_valid_actions_separated(self,state: GameState)->list:
         """Function that generates a list of all valid actions in a given state"""
@@ -72,18 +73,25 @@ class GeneticAgent(BaseAgent):
         
         valid_actions = self.generate_valid_actions_separated(observation.state)
 
-        i = len(valid_actions) - 1
-        action = None
+        greedy = False
 
-        while action is None:
-            if valid_actions[i] != []:
-                action = choice(valid_actions[i])
-                if action in taken_actions:
-                    valid_actions[i].remove(action)
-                    action = None
-            else:
-                i -= 1
-        return action
+        if greedy:
+
+            i = len(valid_actions) - 1
+            action = None
+
+            while action is None:
+                if valid_actions[i] != []:
+                    action = choice(valid_actions[i])
+                    if action in taken_actions:
+                        valid_actions[i].remove(action)
+                        action = None
+                else:
+                    i -= 1
+            return action
+        else:
+            action = choice(valid_actions[0] + valid_actions[1] + valid_actions[2] + valid_actions[3] + valid_actions[4])
+            return action
     
     def play_game_greedy(self, observation):
         """
@@ -126,8 +134,8 @@ class GeneticAgent(BaseAgent):
         """
         # Ideal population size: 1000
         # Ideal number of generations: 500
-        DEFAULT_POPULATION_SIZE = 1000
-        DEFAULT_NUM_GENERATIONS = 80
+        DEFAULT_POPULATION_SIZE = 2500
+        DEFAULT_NUM_GENERATIONS = 200
         DEFAULT_REPLACEMENT = True
         DEFAULT_NUM_PER_TOURNAMENT = 5
         DEFAULT_N_POINTS = True
@@ -379,7 +387,7 @@ class GeneticAgent(BaseAgent):
 
 
         try:
-            while (generation < num_generations) and (best_score < 2500):
+            while (generation < num_generations) and (best_score < 10000):
                 print("Generation: ", generation)
                 #print(generation)
                 offspring = []
@@ -388,18 +396,29 @@ class GeneticAgent(BaseAgent):
                 #print("copy population")
                 parents_scores = np.array([fitness_eval_v02(individual, agent.request_game_reset(), 0) for individual in population])
                 #print("parents_scores")
-                index_best_score = np.argmax(parents_scores[:,0])
-                #print(index_best_score)
+                index_best_score = np.argmax(parents_scores[:, 0])
                 best_score_complete = parents_scores[index_best_score, :]
-                #print(best_score_complete)
                 best_score = best_score_complete[0]
-                print("ammount of individuals: ", len(parents_scores))
-                print("total good actions: ", np.sum(parents_scores[:,1]))
+
+                index_worst_score = np.argmin(parents_scores[:, 0])
+                worst_score_complete = parents_scores[index_worst_score, :]
+                worst_score = worst_score_complete[0]
+
+                print("Amount of individuals: ", len(parents_scores))
+                print("Total good actions: ", np.sum(parents_scores[:, 1]))
                 print("Best score complete: ", best_score_complete)
-                print("Worst score complete: ", np.min(parents_scores, axis=0))
+                print("Worst score complete: ", worst_score_complete)
                 print("Average score complete: ", np.mean(parents_scores, axis=0))
                 metrics_mean = np.mean(parents_scores, axis=0)
                 metrics_std = np.std(parents_scores, axis=0)
+                print("Standard deviation: ", metrics_std)
+
+                if generation % 10 == 0:  # Check every 10 generations
+                    
+                    if metrics_std[0] < 200:  # Define a threshold for diversity
+                        mutation_prob = min(0.1, mutation_prob * 2)  # Increase mutation rate
+                        print("Mutation rate increased to: ", mutation_prob)
+
                 #print(best_score,metrics_mean,metrics_std)
                 # save best, mean and std scores
                 with open(path.join(PATH_RESULTS, 'best_scores.csv'), 'a', newline='') as partial_file:
