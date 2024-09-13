@@ -126,7 +126,6 @@ class GeneticAgent(BaseAgent):
         # select random actions to fill the rest of the list
         #Arreglar 100 hardcoded
 
-        print(observation.info)
         while len(actions) < 100:
             valid_actions_separated = agent.generate_valid_actions_separated(observation.state)
             action = choice(valid_actions_separated[0] + valid_actions_separated[1] + valid_actions_separated[2] + valid_actions_separated[3] + valid_actions_separated[4])
@@ -140,10 +139,9 @@ class GeneticAgent(BaseAgent):
         """
         The main function for the gameplay. Handles agent registration and the main interaction loop.
         """
-        # Ideal population size: 1000
-        # Ideal number of generations: 500
+
         DEFAULT_POPULATION_SIZE = 2500
-        DEFAULT_NUM_GENERATIONS = 50
+        DEFAULT_NUM_GENERATIONS = 55
         DEFAULT_REPLACEMENT = True
         DEFAULT_NUM_PER_TOURNAMENT = 5
         DEFAULT_N_POINTS = True
@@ -323,10 +321,7 @@ class GeneticAgent(BaseAgent):
                     if individual_result[i - 1][1] == 9:
                         break
                 parsed_individual_result.append(return_reward)
-                print("return_reward = ", return_reward)
                 agent.append_to_parsed_population(parsed_individual_result)
-                print("parsed_individual_result")
-                print(parsed_individual_result)
 
             return return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps, won
         
