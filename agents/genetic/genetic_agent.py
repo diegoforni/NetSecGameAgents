@@ -36,6 +36,16 @@ class GeneticAgent(BaseAgent):
     def __init__(self, host, port,role, seed) -> None:
         super().__init__(host, port, role)
         np.set_printoptions(suppress=True, precision=6)
+        self.parsed_population = []
+
+    def append_to_parsed_population(self, individual):
+        self.parsed_population.append(individual)
+
+    def parse_action(action):
+        return {
+            "type": action.action_type.name,
+            "params": action.params
+        }
 
     def generate_valid_actions_separated(self,state: GameState)->list:
         """Function that generates a list of all valid actions in a given state"""
@@ -135,7 +145,7 @@ class GeneticAgent(BaseAgent):
         # Ideal population size: 1000
         # Ideal number of generations: 500
         DEFAULT_POPULATION_SIZE = 2500
-        DEFAULT_NUM_GENERATIONS = 200
+        DEFAULT_NUM_GENERATIONS = 50
         DEFAULT_REPLACEMENT = True
         DEFAULT_NUM_PER_TOURNAMENT = 5
         DEFAULT_N_POINTS = True
@@ -221,7 +231,7 @@ class GeneticAgent(BaseAgent):
             return child1, child2
         
 
-        def fitness_eval_v02(individual, observation, num_steps = 0):
+        def fitness_eval_v02(individual, observation, final, num_steps = 0):
             #This function rewards when a changing state is observed, it does not care if the action is valid or not (e.g. FindServices on a host before doing the corresponding ScanNetwork is not valid, but it is possible and the state will probably change, so it is rewarded).
             #Furthermore, if the state does not change but the action is valid, it does not contribute to the reward.
             #Finally, actions that do not change the state and are not valid are penalized.
@@ -233,12 +243,16 @@ class GeneticAgent(BaseAgent):
             reward = 0
             reward_goal = 0
 
+            individual_result = [[0,0] for _ in range(len(individual))]
+
             if observation is None:
                 observation = agent.request_game_reset()
 
             current_state = observation.state
             while i < len(individual) and not observation.end:
                 valid_actions = generate_valid_actions(current_state)
+
+                individual_result[i][0] = individual[i]
                 
                 if individual[i] in valid_actions:
                     observation = agent.make_step(individual[i])
@@ -250,6 +264,7 @@ class GeneticAgent(BaseAgent):
                 
                 if current_state != new_state:
                     num_good_actions += 1
+                    individual_result[i][1] = 1
                     action_type = individual[i].type
                     if action_type == ActionType.ScanNetwork:
                         reward = 10
@@ -265,9 +280,12 @@ class GeneticAgent(BaseAgent):
                     if individual[i] in valid_actions:
                         reward += -10
                         num_boring_actions += 1
+                        individual_result[i][1] = 0
+
                     else:
                         reward += -100
                         num_bad_actions += 1
+                        individual_result[i][1] = -1
                 current_state = observation.state
                 i += 1
                 #print(reward)
@@ -275,12 +293,17 @@ class GeneticAgent(BaseAgent):
 
             if "end_reason" in observation.info and observation.info["end_reason"] == "goal_reached":
                 reward_goal = 10000
+                individual_result[i - 1][1] = 9
                 won = 1
             else:
                 won = 0
 
             final_reward = reward + reward_goal
             div_aux = num_steps - num_good_actions + num_bad_actions
+
+
+          
+                
             #print(reward,reward_goal,num_steps,div_aux)
             if div_aux == 0:
                 # i.e. when num_steps == num_good_actions and num_bad_actions == 0
@@ -293,6 +316,20 @@ class GeneticAgent(BaseAgent):
             else:
                 return_reward = final_reward 
             #print(return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps)
+            if final is True:
+                parsed_individual_result = []
+                i = 0
+                while i < len(individual):
+                    parsed_individual_result.append([individual[i], individual_result[i][1]])
+                    i += 1
+                    if individual_result[i - 1][1] == 9:
+                        break
+                parsed_individual_result.append(return_reward)
+                print("return_reward = ", return_reward)
+                agent.append_to_parsed_population(parsed_individual_result)
+                print("parsed_individual_result")
+                print(parsed_individual_result)
+
             return return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps, won
         
 
@@ -377,7 +414,7 @@ class GeneticAgent(BaseAgent):
         for i in range(int(population_size/10)):
             population[i] = agent.play_game_greedy(agent.request_game_reset())
 
-        print("Best initial fitness: ", max([fitness_eval_v02(individual, agent.request_game_reset(), 0)[0] for individual in population]))
+        print("Best initial fitness: ", max([fitness_eval_v02(individual, agent.request_game_reset(),False, 0)[0] for individual in population]))
 
         # Generations
 
@@ -394,7 +431,7 @@ class GeneticAgent(BaseAgent):
                 #print("inic offspring")
                 popu_crossover = population.copy()
                 #print("copy population")
-                parents_scores = np.array([fitness_eval_v02(individual, agent.request_game_reset(), 0) for individual in population])
+                parents_scores = np.array([fitness_eval_v02(individual, agent.request_game_reset(),False, 0) for individual in population])
                 #print("parents_scores")
                 index_best_score = np.argmax(parents_scores[:, 0])
                 best_score_complete = parents_scores[index_best_score, :]
@@ -457,7 +494,7 @@ class GeneticAgent(BaseAgent):
                     offspring.append(child1)
                     offspring.append(child2)
 
-                offspring_scores = np.array([fitness_eval_v02(individual, agent.request_game_reset(), 0) for individual in offspring])
+                offspring_scores = np.array([fitness_eval_v02(individual, agent.request_game_reset(),False, 0) for individual in offspring])
                 # survivor selection
                 new_generation = steady_state_selection(population, parents_scores, offspring, offspring_scores, num_replace)
                 population = new_generation
@@ -472,7 +509,7 @@ class GeneticAgent(BaseAgent):
 
         # calculate scores for last generation, and update files:
 
-        last_generation_scores = np.array([fitness_eval_v02(individual,  agent.request_game_reset(), 0) for individual in population])
+        last_generation_scores = np.array([fitness_eval_v02(individual,  agent.request_game_reset(),True, 0) for individual in population])
         index_best_score = np.argmax(last_generation_scores[:,0])
         best_score_complete = last_generation_scores[index_best_score, :]
         metrics_mean = np.mean(last_generation_scores, axis=0)
@@ -506,6 +543,28 @@ class GeneticAgent(BaseAgent):
             print(best_sequence[i])
 
         print("\nBest sequence score: ", best_score_complete)
+        # Serializar la población completa
+        parsed_population_json = []
+
+        population = agent.parsed_population
+
+        # Save the parsed population in a json file
+        for individual in population:
+            individual_str = []
+            for i in range(len(individual) - 1):
+                # add the action and the result of the action as string, transform action to string, not as_json
+                string = ""
+                string += str(individual[i]) + " " + str(individual[i + 1])
+                individual_str.append(string)
+
+
+            #individual_str.append(individual[-1])
+            parsed_population_json.append(individual_str)
+
+        with open(path.join(PATH_RESULTS, 'parsed_population.json'), "a") as f:
+            json.dump(parsed_population_json, f, indent=2)
+          
+
 
 if __name__ == '__main__':
 
