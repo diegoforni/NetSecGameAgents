@@ -125,9 +125,7 @@ class GeneticAgent(BaseAgent):
         # actions needs to be of length max_steps
         # select random actions to fill the rest of the list
         #Arreglar 100 hardcoded
-        print("num_steps",  num_steps)
 
-        print("last observation info")
         print(observation.info)
         while len(actions) < 100:
             valid_actions_separated = agent.generate_valid_actions_separated(observation.state)
