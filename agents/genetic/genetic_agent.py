@@ -50,7 +50,6 @@ class GeneticAgent(BaseAgent):
 
   
     def select_action_random_agent(self, observation: Observation) -> Action:
-        
         valid_actions = generate_valid_actions(observation.state)
         action = choice(valid_actions)
         return action
@@ -79,9 +78,8 @@ class GeneticAgent(BaseAgent):
         #Arreglar 100 hardcoded
 
         while len(actions) < 100:
-            valid_actions = agent.select_action_random_agent(observation.state)
-            action = choice(valid_actions)
-            actions.append(action)
+            valid_action = agent.select_action_random_agent(observation)
+            actions.append(valid_action)
         
         return actions
 
@@ -303,6 +301,7 @@ class GeneticAgent(BaseAgent):
             new_generation = parents_sort[num_replace:] + offspring_sort[population_size-num_replace:]
             return new_generation
 
+
         def get_all_actions_by_type(all_actions):
             all_actions_by_type = {}
             ScanNetwork_list=[]
@@ -370,7 +369,7 @@ class GeneticAgent(BaseAgent):
 
         # Replace 10% of the population with greedy agents
         for i in range(int(population_size/10)):
-            population[i] = agent.play_game_greedy(agent.request_game_reset())
+            population[i] = agent.play_game_random_agent(agent.request_game_reset())
 
         print("Best initial fitness: ", max([fitness_eval_v02(individual, agent.request_game_reset(),False, 0)[0] for individual in population]))
 
@@ -378,7 +377,6 @@ class GeneticAgent(BaseAgent):
 
         generation = 0
         best_score = 0
-
 
 
         try:
