@@ -9,6 +9,7 @@ import os
 from random import choice
 import argparse
 import numpy as np
+import math
 
 import pandas as pd 
 import copy
@@ -47,63 +48,14 @@ class GeneticAgent(BaseAgent):
             "params": action.params
         }
 
-    def generate_valid_actions_separated(self,state: GameState)->list:
-        """Function that generates a list of all valid actions in a given state"""
-        valid_scan_network = set()
-        valid_find_services = set()
-        valid_exploit_service = set()
-        valid_find_data = set()
-        valid_exfiltrate_data = set()
-
-        for src_host in state.controlled_hosts:
-            #Network Scans
-            for network in state.known_networks:
-                # TODO ADD neighbouring networks
-                valid_scan_network.add(Action(ActionType.ScanNetwork, params={"target_network": network, "source_host": src_host,}))
-            # Service Scans
-            for host in state.known_hosts:
-                valid_find_services.add(Action(ActionType.FindServices, params={"target_host": host, "source_host": src_host,}))
-            # Service Exploits
-            for host, service_list in state.known_services.items():
-                for service in service_list:
-                    valid_exploit_service.add(Action(ActionType.ExploitService, params={"target_host": host,"target_service": service,"source_host": src_host,}))
-        # Data Scans
-        for host in state.controlled_hosts:
-            valid_find_data.add(Action(ActionType.FindData, params={"target_host": host, "source_host": host}))
-
-        # Data Exfiltration
-        for src_host, data_list in state.known_data.items():
-            for data in data_list:
-                for trg_host in state.controlled_hosts:
-                    if trg_host != src_host:
-                        valid_exfiltrate_data.add(Action(ActionType.ExfiltrateData, params={"target_host": trg_host, "source_host": src_host, "data": data}))
-        return list(valid_scan_network), list(valid_find_services), list(valid_exploit_service), list(valid_find_data), list(valid_exfiltrate_data)
-    
-    def select_action_greedy(self, observation: Observation, taken_actions) -> Action:
+  
+    def select_action_random_agent(self, observation: Observation) -> Action:
         
-        valid_actions = self.generate_valid_actions_separated(observation.state)
-
-        greedy = False
-
-        if greedy:
-
-            i = len(valid_actions) - 1
-            action = None
-
-            while action is None:
-                if valid_actions[i] != []:
-                    action = choice(valid_actions[i])
-                    if action in taken_actions:
-                        valid_actions[i].remove(action)
-                        action = None
-                else:
-                    i -= 1
-            return action
-        else:
-            action = choice(valid_actions[0] + valid_actions[1] + valid_actions[2] + valid_actions[3] + valid_actions[4])
-            return action
+        valid_actions = generate_valid_actions(observation.state)
+        action = choice(valid_actions)
+        return action
     
-    def play_game_greedy(self, observation):
+    def play_game_random_agent(self, observation):
         """
         The main function for the gameplay. Handles agent registration and the main interaction loop.
         """
@@ -116,7 +68,7 @@ class GeneticAgent(BaseAgent):
             # Store returns in the episode
             episodic_returns.append(observation.reward)
             # Select the action randomly
-            action = agent.select_action_greedy(observation, taken_actions)
+            action = agent.select_action_random_agent(observation)
             taken_actions[action] = True
             actions.append(action)
             
@@ -127,8 +79,8 @@ class GeneticAgent(BaseAgent):
         #Arreglar 100 hardcoded
 
         while len(actions) < 100:
-            valid_actions_separated = agent.generate_valid_actions_separated(observation.state)
-            action = choice(valid_actions_separated[0] + valid_actions_separated[1] + valid_actions_separated[2] + valid_actions_separated[3] + valid_actions_separated[4])
+            valid_actions = agent.select_action_random_agent(observation.state)
+            action = choice(valid_actions)
             actions.append(action)
         
         return actions
@@ -288,7 +240,6 @@ class GeneticAgent(BaseAgent):
             
 
             if "end_reason" in observation.info and observation.info["end_reason"] == "goal_reached":
-                reward_goal = 10000
                 individual_result[i - 1][1] = 9
                 won = 1
             else:
@@ -307,10 +258,24 @@ class GeneticAgent(BaseAgent):
                 div = num_steps
             else:
                 div = div_aux
+
+            if won == 1:
+                div = div * 0.75
+                
+                def sigmoid_good_steps(good_steps):
+                    return 1 / (1 + math.exp(-((1 / 5) * (10 - good_steps))))
+                def sigmoid_step_ratio(ratio):
+                    return 1 / (1 + math.exp(-((5) * (ratio - 0.5))))
+
+                final_reward = 7500 * sigmoid_good_steps(num_good_actions) * sigmoid_step_ratio(num_good_actions / num_steps)
+
             if final_reward >= 0:
                 return_reward = final_reward / div
             else:
                 return_reward = final_reward 
+
+            if won == 1:
+                return_reward += 7500
             #print(return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps)
             if final is True:
                 parsed_individual_result = []
@@ -417,7 +382,7 @@ class GeneticAgent(BaseAgent):
 
 
         try:
-            while (generation < num_generations) and (best_score < 10000):
+            while (generation < num_generations) and (best_score < 12500):
                 print("Generation: ", generation)
                 #print(generation)
                 offspring = []
@@ -521,13 +486,6 @@ class GeneticAgent(BaseAgent):
 
         # the best sequence
         best_sequence = population[index_best_score]
-        # save the best sequence in file
-        best_sequence_json = []
-        for j in range(max_number_steps):
-            best_sequence_json.append(best_sequence[j].as_json())
-        with open(path.join(PATH_RESULTS,'best_sequence.json'), "a") as f:
-            json.dump(best_sequence_json, f, indent=2)
-
 
         print("\nGeneration = ", generation)
 
@@ -547,17 +505,27 @@ class GeneticAgent(BaseAgent):
             for i in range(len(individual) - 1):
                 # add the action and the result of the action as string, transform action to string, not as_json
                 string = ""
-                string += str(individual[i]) + " " + str(individual[i + 1])
+                string += str(individual[i]) 
                 individual_str.append(string)
 
 
             #individual_str.append(individual[-1])
             parsed_population_json.append(individual_str)
-
+              
         with open(path.join(PATH_RESULTS, 'parsed_population.json'), "a") as f:
             json.dump(parsed_population_json, f, indent=2)
-          
-
+        
+        parsed_best_sequence = []
+        individual = population[index_best_score]
+        i = 0
+        while i < len(individual):
+            parsed_best_sequence.append(str([individual[i]]))
+            i += 1
+            if individual[i - 1][1] == 9:
+                break
+        
+        with open(path.join(PATH_RESULTS, 'best_sequence.json'), "a") as f:
+            json.dump(parsed_best_sequence, f, indent=2)
 
 if __name__ == '__main__':
 
