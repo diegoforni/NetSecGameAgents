@@ -137,7 +137,8 @@ class GeneticAgent(BaseAgent):
 
         # Step 1: Select which action type to pick from, based on probabilities
         actions_to_pick_from = 0
-
+        selected_action_type_index = None
+        was_invalid = False
         while actions_to_pick_from == 0:
             selected_action_type_index = np.random.choice(len(valid_actions), p=transitions[lastActionType])
             if selected_action_type_index == 5:
@@ -145,15 +146,18 @@ class GeneticAgent(BaseAgent):
                 invalid_actions = []
                 env = NetworkSecurityEnvironment(path.join(basePath, 'env', 'netsecenv_conf.yaml'))
                 all_actions = env.get_all_actions()
+                action_list = list(all_actions.values())
+                all_actions = action_list
                 for action in all_actions:
                     if action not in all_valid_actions:
                         invalid_actions.append(action)
+                was_invalid = True
                 
             selected_action_list = valid_actions[selected_action_type_index]
             actions_to_pick_from = len(selected_action_list)
-        if selected_action_type_index == 5:
+        if was_invalid is True:
             selected_action = random.choice(invalid_actions)
-            print("Invalid action selected")
+            print("Invalid action selected: ", selected_action)
 
         else:
             selected_action = np.random.choice(selected_action_list)
@@ -180,6 +184,7 @@ class GeneticAgent(BaseAgent):
             actions.append(action)
             
             observation = agent.make_step(action)
+
             # To return
         # actions needs to be of length max_steps
         # select random actions to fill the rest of the list
