@@ -85,7 +85,7 @@ class GeneticAgent(BaseAgent):
                         valid_exfiltrate_data.add(Action(ActionType.ExfiltrateData, params={"target_host": trg_host, "source_host": src_host, "data": data}))
 
 
-        return list(valid_scan_network), list(valid_find_services), list(valid_exploit_service), list(valid_find_data), list(valid_exfiltrate_data), []
+        return list(valid_scan_network), list(valid_find_services), list(valid_exploit_service), list(valid_find_data), list(valid_exfiltrate_data), 
   
   
     def select_action_random_agent(self, observation: Observation, lastActionType) -> Action:
@@ -112,17 +112,45 @@ class GeneticAgent(BaseAgent):
 
             return normalized_transitions
         
-        
-
+        '''
+        # Transition probabilities Random Agent
         transitions = {
-            # Action type: [ScanNetwork, FindServices, ExploitService, FindData, ExfiltrateData, InvalidAction]
-            "Initial": [1.0, 0, 0, 0, 0, 0],
-            ActionType.ScanNetwork: [0.05, 0.93, 0.02, 0, 0, 0],
-            ActionType.FindServices: [0.02, 0.45, 0.0, 0.52,0,0],
-            ActionType.ExploitService: [0.0, 0.1, 0.99, 0.0, 0,0],
-            ActionType.FindData: [0.39, 0.12, 0.21, 0.01, 0.28, 0],
-            ActionType.ExfiltrateData: [0.12, 0.11, 0.0, 0, 0.65,0.12]
+            # Action type: [ScanNetwork, FindServices, ExploitService, FindData, ExfiltrateData]
+            "Initial": [0.53, 0.31, 0.00, 0.16, 0.00],
+            ActionType.ScanNetwork: [0.23, 0.38, 0.29, 0.07, 0.03],
+            ActionType.FindServices: [0.19, 0.37, 0.34, 0.06, 0.04],
+            ActionType.ExploitService: [0.18, 0.33, 0.37, 0.06, 0.06],
+            ActionType.FindData: [0.23, 0.34, 0.31, 0.07, 0.05],
+            ActionType.ExfiltrateData: [0.13, 0.30, 0.37, 0.04, 0.16]
         }
+        '''
+        """
+        # Transition probabilities GPT 4
+        transitions = {
+            # Action type: [ScanNetwork, FindServices, ExploitService, FindData, ExfiltrateData]
+            "Initial": [1, 0.0, 0.00, 0.0, 0.00, 0],
+            ActionType.ScanNetwork: [0.05, 0.93, 0.02, 0.0, 0.0],
+            ActionType.FindServices: [0.02, 0.45, 0.0, 0.52, 0.0],
+            ActionType.ExploitService: [0.0, 0.01, 0.99, 0.0, 0.0],
+            ActionType.FindData: [0.39, 0.12, 0.21, 0.01, 0.28],
+            ActionType.ExfiltrateData: [0.12, 0.11, 0.0, 0.0, 0.65]
+        }
+        """
+
+        
+        #Transitions GA
+        transitions = {
+            # Action type: [ScanNetwork, FindServices, ExploitService, FindData, ExfiltrateData]
+            "Initial": [0.47, 0.21, 0.05, 0.10, 0.17],
+            ActionType.ScanNetwork: [0.25, 0.36, 0.18, 0.09, 0.12],
+            ActionType.FindServices: [0.16, 0.31, 0.29, 0.10, 0.15],
+            ActionType.ExploitService: [0.15, 0.29, 0.27, 0.10, 0.19],
+            ActionType.FindData: [0.15, 0.22, 0.17, 0.03, 0.43],
+            ActionType.ExfiltrateData: [0.15, 0.24, 0.24, 0.08, 0.29]
+        }
+
+
+
 
 
         transitions = normalize_probabilities(transitions)
@@ -138,28 +166,11 @@ class GeneticAgent(BaseAgent):
         # Step 1: Select which action type to pick from, based on probabilities
         actions_to_pick_from = 0
         selected_action_type_index = None
-        was_invalid = False
         while actions_to_pick_from == 0:
             selected_action_type_index = np.random.choice(len(valid_actions), p=transitions[lastActionType])
-            if selected_action_type_index == 5:
-                all_valid_actions = valid_actions[0] + valid_actions[1] + valid_actions[2] + valid_actions[3] + valid_actions[4]
-                invalid_actions = []
-                env = NetworkSecurityEnvironment(path.join(basePath, 'env', 'netsecenv_conf.yaml'))
-                all_actions = env.get_all_actions()
-                action_list = list(all_actions.values())
-                all_actions = action_list
-                for action in all_actions:
-                    if action not in all_valid_actions:
-                        invalid_actions.append(action)
-                was_invalid = True
                 
             selected_action_list = valid_actions[selected_action_type_index]
             actions_to_pick_from = len(selected_action_list)
-        if was_invalid is True:
-            selected_action = random.choice(invalid_actions)
-            print("Invalid action selected: ", selected_action)
-
-        else:
             selected_action = np.random.choice(selected_action_list)
         return selected_action
     
@@ -459,7 +470,7 @@ class GeneticAgent(BaseAgent):
         parsed_best_sequence = []
         individual = population[index_best_score]
         i = 0
-        while i < len(individual):
+        while i < len(individual) -1:
             parsed_best_sequence.append(str([individual[i]]))
             i += 1
             if individual[i - 1][1] == 9:

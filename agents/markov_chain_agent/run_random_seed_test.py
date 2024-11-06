@@ -11,7 +11,7 @@ path_config = "/Users/diegoforni/Documents/labsin/NetSecGame/env/netsecenv_conf.
 # Function to run genetic_agent
 def run_genetic_agent():
     # Run genetic_agent
-    subprocess.run(['python3', 'random_agent.py'])
+    subprocess.run(['python3', 'markov_chain_agent.py'])
 
 # Function to update the seed in the YAML config file
 def update_seed_in_config(new_seed, config_path):
