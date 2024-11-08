@@ -32,6 +32,7 @@ from base_agent import BaseAgent
 from agent_utils import generate_valid_actions
 from datetime import datetime
 
+import json
 
 class GeneticAgent(BaseAgent):
 
@@ -50,6 +51,61 @@ class GeneticAgent(BaseAgent):
         }
     
 
+    def normalize_probabilities(transitions):
+            """Function to normalize transition probabilities to ensure they sum up to 1."""
+            normalized_transitions = {}
+            
+            for action_type, probs in transitions.items():
+                total = sum(probs)
+                if total != 1:
+                    # Normalize the probabilities by dividing each by the total sum
+                    normalized_transitions[action_type] = [prob / total for prob in probs]
+                else:
+                    normalized_transitions[action_type] = probs  # Already normalized
+
+            return normalized_transitions
+       
+       
+    #Fix, this should be outside the function, only executed once
+    # Load JSON data from a file
+    with open("transition_matrix.json", "r") as file:
+        transitions_data = json.load(file)
+
+    # Initialize an empty dictionary to store the transitions
+    transitions = {}
+
+    # Mapping from string keys to ActionType enum members
+    action_mapping = {
+        "ScanNetwork": ActionType.ScanNetwork,
+        "FindServices": ActionType.FindServices,
+        "ExploitService": ActionType.ExploitService,
+        "FindData": ActionType.FindData,
+        "ExfiltrateData": ActionType.ExfiltrateData,
+    }
+
+    # Loop through each action's transition probabilities
+    for action_data in transitions_data["transition_probabilities"]:
+        action = action_data["Action"]
+
+        # Extract the probabilities and store them in the correct order
+        probabilities = [
+            action_data["ScanNetwork"],
+            action_data["FindServices"],
+            action_data["ExploitService"],
+            action_data["FindData"],
+            action_data["ExfiltrateData"]
+        ]
+
+        # Assign the probabilities list to the correct action key in the transitions dictionary
+        if action == "Initial Action":
+            transitions["Initial"] = probabilities
+        else:
+            # Use the ActionType mapping for other actions
+            transitions[action_mapping[action]] = probabilities
+
+
+
+    transitions = normalize_probabilities(transitions)
 
 
     def generate_valid_actions_separated(self,state: GameState)->list:
@@ -64,7 +120,6 @@ class GeneticAgent(BaseAgent):
         for src_host in state.controlled_hosts:
             #Network Scans
             for network in state.known_networks:
-                # TODO ADD neighbouring networks
                 valid_scan_network.add(Action(ActionType.ScanNetwork, params={"target_network": network, "source_host": src_host,}))
             # Service Scans
             for host in state.known_hosts:
@@ -87,94 +142,36 @@ class GeneticAgent(BaseAgent):
 
         return list(valid_scan_network), list(valid_find_services), list(valid_exploit_service), list(valid_find_data), list(valid_exfiltrate_data), 
   
-  
-    def select_action_random_agent(self, observation: Observation, lastActionType) -> Action:
+    
+    def select_action_markov_chain_agent(self, observation: Observation, lastActionType) -> Action:
         # Generate valid actions as a tuple of lists
         valid_actions = self.generate_valid_actions_separated(observation.state)
-
-
-
-        
-        
         # Transition probabilities
 
-        def normalize_probabilities(transitions):
-            """Function to normalize transition probabilities to ensure they sum up to 1."""
-            normalized_transitions = {}
-            
-            for action_type, probs in transitions.items():
-                total = sum(probs)
-                if total != 1:
-                    # Normalize the probabilities by dividing each by the total sum
-                    normalized_transitions[action_type] = [prob / total for prob in probs]
-                else:
-                    normalized_transitions[action_type] = probs  # Already normalized
-
-            return normalized_transitions
         
-        '''
-        # Transition probabilities Random Agent
-        transitions = {
-            # Action type: [ScanNetwork, FindServices, ExploitService, FindData, ExfiltrateData]
-            "Initial": [0.53, 0.31, 0.00, 0.16, 0.00],
-            ActionType.ScanNetwork: [0.23, 0.38, 0.29, 0.07, 0.03],
-            ActionType.FindServices: [0.19, 0.37, 0.34, 0.06, 0.04],
-            ActionType.ExploitService: [0.18, 0.33, 0.37, 0.06, 0.06],
-            ActionType.FindData: [0.23, 0.34, 0.31, 0.07, 0.05],
-            ActionType.ExfiltrateData: [0.13, 0.30, 0.37, 0.04, 0.16]
-        }
-        '''
-        """
-        # Transition probabilities GPT 4
-        transitions = {
-            # Action type: [ScanNetwork, FindServices, ExploitService, FindData, ExfiltrateData]
-            "Initial": [1, 0.0, 0.00, 0.0, 0.00, 0],
-            ActionType.ScanNetwork: [0.05, 0.93, 0.02, 0.0, 0.0],
-            ActionType.FindServices: [0.02, 0.45, 0.0, 0.52, 0.0],
-            ActionType.ExploitService: [0.0, 0.01, 0.99, 0.0, 0.0],
-            ActionType.FindData: [0.39, 0.12, 0.21, 0.01, 0.28],
-            ActionType.ExfiltrateData: [0.12, 0.11, 0.0, 0.0, 0.65]
-        }
-        """
-
-        
-        #Transitions GA
-        transitions = {
-            # Action type: [ScanNetwork, FindServices, ExploitService, FindData, ExfiltrateData]
-            "Initial": [0.47, 0.21, 0.05, 0.10, 0.17],
-            ActionType.ScanNetwork: [0.25, 0.36, 0.18, 0.09, 0.12],
-            ActionType.FindServices: [0.16, 0.31, 0.29, 0.10, 0.15],
-            ActionType.ExploitService: [0.15, 0.29, 0.27, 0.10, 0.19],
-            ActionType.FindData: [0.15, 0.22, 0.17, 0.03, 0.43],
-            ActionType.ExfiltrateData: [0.15, 0.24, 0.24, 0.08, 0.29]
-        }
-
-
-
-
-
-        transitions = normalize_probabilities(transitions)
 
         # Set default lastActionType
         if lastActionType is None:
             lastActionType = "Initial"
         
         # Ensure the length of transitions matches the number of action categories
-        if len(valid_actions) != len(transitions[lastActionType]):
-            raise ValueError(f"Mismatch between valid action lists and transition probabilities: {len(valid_actions)} vs {len(transitions[lastActionType])}")
+        if len(valid_actions) != len(self.transitions[lastActionType]):
+            raise ValueError(f"Mismatch between valid action lists and transition probabilities: {len(valid_actions)} vs {len(self.transitions[lastActionType])}")
 
         # Step 1: Select which action type to pick from, based on probabilities
         actions_to_pick_from = 0
         selected_action_type_index = None
-        while actions_to_pick_from == 0:
-            selected_action_type_index = np.random.choice(len(valid_actions), p=transitions[lastActionType])
+        selected_action = None
+        while selected_action is None:
+            selected_action_type_index = np.random.choice(len(valid_actions), p=self.transitions[lastActionType])
                 
             selected_action_list = valid_actions[selected_action_type_index]
             actions_to_pick_from = len(selected_action_list)
-            selected_action = np.random.choice(selected_action_list)
+            if actions_to_pick_from > 0:
+                selected_action = np.random.choice(selected_action_list)
         return selected_action
     
-    def play_game_random_agent(self, observation):
+    def play_game_markov_chain_agent(self, observation):
         """
         The main function for the gameplay. Handles agent registration and the main interaction loop.
         """
@@ -188,22 +185,12 @@ class GeneticAgent(BaseAgent):
             # Store returns in the episode
             episodic_returns.append(observation.reward)
             # Select the action randomly
-            action = agent.select_action_random_agent(observation, lastActionType)
-            #Arreglar posible falla
+            action = agent.select_action_markov_chain_agent(observation, lastActionType)
             lastActionType = action.type
             taken_actions[action] = True
             actions.append(action)
             
             observation = agent.make_step(action)
-
-            # To return
-        # actions needs to be of length max_steps
-        # select random actions to fill the rest of the list
-        #Arreglar 100 hardcoded
-
-        while len(actions) < 100:
-            valid_action = agent.select_action_random_agent(observation, lastActionType)
-            actions.append(valid_action)
 
         
         return actions
@@ -214,25 +201,12 @@ class GeneticAgent(BaseAgent):
         """
         The main function for the gameplay. Handles agent registration and the main interaction loop.
         """
-
-        DEFAULT_POPULATION_SIZE = 2500
-        DEFAULT_NUM_GENERATIONS = -1
-        DEFAULT_REPLACEMENT = True
-        DEFAULT_NUM_PER_TOURNAMENT = 5
-        DEFAULT_N_POINTS = True
-        DEFAULT_NUM_POINTS = 6
-        DEFAULT_P_VALUE = 0.5
-        DEFAULT_CROSS_PROB = 1.0 
-        DEFAULT_PARAMETER_MUTATION = False # if False, mutation is by action
-        DEFAULT_MUTATION_PROB = 0.0333 # This was calculated for an individual of 30 actions
-        DEFAULT_NUM_REPLACE = 50 
-        DEFAULT_PATH_GENETIC = "./genetic"
+        # Fix, this should be episodes like in random agent
+        DEFAULT_POPULATION_SIZE = 100
         DEFAULT_PATH_RESULTS = "./results"
 
-        
-        
 
-        def fitness_eval_v02(individual, observation, final, num_steps = 0):
+        def fitness_eval_v02(individual, observation):
             #This function rewards when a changing state is observed, it does not care if the action is valid or not (e.g. FindServices on a host before doing the corresponding ScanNetwork is not valid, but it is possible and the state will probably change, so it is rewarded).
             #Furthermore, if the state does not change but the action is valid, it does not contribute to the reward.
             #Finally, actions that do not change the state and are not valid are penalized.
@@ -241,8 +215,7 @@ class GeneticAgent(BaseAgent):
             num_good_actions = 0
             num_boring_actions = 0
             num_bad_actions = 0
-            reward = 0
-            reward_goal = 0
+
 
             individual_result = [[0,0] for _ in range(len(individual))]
 
@@ -257,195 +230,59 @@ class GeneticAgent(BaseAgent):
                 
                 if individual[i] in valid_actions:
                     observation = agent.make_step(individual[i])
-                if num_steps is None:
-                    num_steps = 0
-                num_steps += 1 
+
                 new_state = observation.state
 
                 
                 if current_state != new_state:
                     num_good_actions += 1
                     individual_result[i][1] = 1
-                    action_type = individual[i].type
-                    if action_type == ActionType.ScanNetwork:
-                        reward = 10
-                    elif action_type == ActionType.FindServices:
-                        reward = 20
-                    elif action_type == ActionType.ExploitService:
-                        reward = 50
-                    elif action_type == ActionType.FindData:
-                        reward = 75
-                    elif action_type == ActionType.ExfiltrateData:
-                        reward = 75
                 else:
                     if individual[i] in valid_actions:
-                        reward += -10
                         num_boring_actions += 1
                         individual_result[i][1] = 0
 
                     else:
-                        reward += -100
                         num_bad_actions += 1
                         individual_result[i][1] = -1
                 current_state = observation.state
                 i += 1
-                #print(reward)
             
-
             if "end_reason" in observation.info and observation.info["end_reason"] == "goal_reached":
                 individual_result[i - 1][1] = 9
-                won = 1
-            else:
-                won = 0
 
-            final_reward = reward + reward_goal
-            div_aux = num_steps - num_good_actions + num_bad_actions
-
-
-          
-                
-            #print(reward,reward_goal,num_steps,div_aux)
-            if div_aux == 0:
-                # i.e. when num_steps == num_good_actions and num_bad_actions == 0
-                # if num_bad_actions > 0, then num_steps + num_bad_actions != num_good_actions because num_steps > num_good_actions
-                div = num_steps
-            else:
-                div = div_aux
-
-            if final_reward >= 0:
-                return_reward = final_reward / div
-            else:
-                return_reward = final_reward 
-
-            if won == 1:
-                return_reward = 7500 + 100000/(num_good_actions + 1.5 * num_boring_actions + 2 * num_bad_actions )
             #print(return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps)
-            if final is True:
-                parsed_individual_result = []
-                i = 0
-                while i < len(individual):
-                    parsed_individual_result.append([individual[i], individual_result[i][1]])
-                    i += 1
-                    if individual_result[i - 1][1] == 9:
-                        break
-                parsed_individual_result.append(return_reward)
-                agent.append_to_parsed_population(parsed_individual_result)
+            parsed_individual_result = []
+            i = 0
+            while i < len(individual):
+                parsed_individual_result.append([individual[i], individual_result[i][1]])
+                i += 1
+                if individual_result[i - 1][1] == 9:
+                    break
+            # Fix, 0 came from reward on GA, it should not exist, but it can not be deleted
+            parsed_individual_result.append(0)
+            agent.append_to_parsed_population(parsed_individual_result)
 
-            return return_reward, num_good_actions, num_boring_actions, num_bad_actions, num_steps, won
+            return 
         
 
-        def get_all_actions_by_type(all_actions):
-            all_actions_by_type = {}
-            ScanNetwork_list=[]
-            FindServices_list=[]
-            ExploitService_list=[]
-            FindData_list=[]
-            ExfiltrateData_list=[]
-            for i in range(len(all_actions)):
-                if ActionType.ScanNetwork==all_actions[i].type:
-                    ScanNetwork_list.append(all_actions[i])
-                elif ActionType.FindServices==all_actions[i].type:
-                    FindServices_list.append(all_actions[i])
-                elif ActionType.ExploitService==all_actions[i].type:
-                    ExploitService_list.append(all_actions[i])
-                elif ActionType.FindData==all_actions[i].type:
-                    FindData_list.append(all_actions[i])
-                else:
-                    ExfiltrateData_list.append(all_actions[i])
-            all_actions_by_type["ActionType.ScanNetwork"] = ScanNetwork_list
-            all_actions_by_type["ActionType.FindServices"] = FindServices_list
-            all_actions_by_type["ActionType.ExploitService"] = ExploitService_list
-            all_actions_by_type["ActionType.FindData"] = FindData_list
-            all_actions_by_type["ActionType.ExfiltrateData"] = ExfiltrateData_list
-            return all_actions_by_type
-        
-        
-        
-
-        env = NetworkSecurityEnvironment(path.join(basePath, 'env', 'netsecenv_conf.yaml'))
-        all_actions = env.get_all_actions()
-        max_number_steps = env._max_steps
-
-        all_actions_by_type = get_all_actions_by_type(all_actions)
-
-        # GA parameters
+        # Fix, this should be episodes like in random agent
         population_size = DEFAULT_POPULATION_SIZE
-        num_generations = DEFAULT_NUM_GENERATIONS
 
-        # parents selection (tournament) parameters
-        select_parents_with_replacement = DEFAULT_REPLACEMENT
-        num_per_tournament = DEFAULT_NUM_PER_TOURNAMENT
-
-        # crossover parameters
-        Npoints = DEFAULT_N_POINTS
-        if DEFAULT_N_POINTS:
-            num_points = DEFAULT_NUM_POINTS
-        else:
-            p_value = DEFAULT_P_VALUE
-        cross_prob = DEFAULT_CROSS_PROB
-
-        # mutation parameters
-        parameter_mutation = DEFAULT_PARAMETER_MUTATION
-        mutation_prob = DEFAULT_MUTATION_PROB
-
-        # survivor selection parameters
-        num_replace = DEFAULT_NUM_REPLACE
-
-        # path to save results
-        PATH_GENETIC = DEFAULT_PATH_GENETIC
         PATH_RESULTS = DEFAULT_PATH_RESULTS
 
-
         # Initialize population
-        # Arreglar, sacar la inicializacion y remplazo
-        population = [[random.choice(all_actions) for _ in range(max_number_steps)] for _ in range(population_size)]
-
-        # Replace 10% of the population with greedy agents
+        # Fix, there is no population
+        population = [None] * int(population_size)
         for i in range(int(population_size)):
-            population[i] = agent.play_game_random_agent(agent.request_game_reset())
-            print(" Individual ", i, " done")
-
-        #print("Best initial fitness: ", max([fitness_eval_v02(individual, agent.request_game_reset(),False, 0)[0] for individual in population]))
-
-        # Generations
-        print("Population done")
-
-        generation = 0
+            population[i] = agent.play_game_markov_chain_agent(agent.request_game_reset())
+            print(" Solution ", i, " done")
 
 
-       
+        #Fix, rename, this saves the solutions
+        last_generation_scores = np.array([fitness_eval_v02(individual,  agent.request_game_reset()) for individual in population])
 
 
-
-        # calculate scores for last generation, and update files:
-
-        last_generation_scores = np.array([fitness_eval_v02(individual,  agent.request_game_reset(),True, 0) for individual in population])
-        index_best_score = np.argmax(last_generation_scores[:,0])
-        best_score_complete = last_generation_scores[index_best_score, :]
-        metrics_mean = np.mean(last_generation_scores, axis=0)
-        metrics_std = np.std(last_generation_scores, axis=0)
-        # save best, mean and std scores from last generation
-        with open(path.join(PATH_RESULTS, 'best_scores.csv'), 'a', newline='') as partial_file:
-            writer_csv = csv.writer(partial_file)
-            writer_csv.writerow(best_score_complete)
-        with open(path.join(PATH_RESULTS, 'metrics_mean.csv'), 'a', newline='') as partial_file:
-            writer_csv = csv.writer(partial_file)
-            writer_csv.writerow(metrics_mean)
-        with open(path.join(PATH_RESULTS, 'metrics_std.csv'), 'a', newline='') as partial_file:
-            writer_csv = csv.writer(partial_file)
-            writer_csv.writerow(metrics_std)
-
-
-        # the best sequence
-        best_sequence = population[index_best_score]
-
-        print("\nGeneration = ", generation)
-
-        print("\nBest sequence: \n")
-        for i in range(max_number_steps):
-            print(best_sequence[i])
-
-        print("\nBest sequence score: ", best_score_complete)
         # Serializar la población completa
         parsed_population_json = []
 
@@ -460,24 +297,13 @@ class GeneticAgent(BaseAgent):
                 string += str(individual[i]) 
                 individual_str.append(string)
 
-
             #individual_str.append(individual[-1])
             parsed_population_json.append(individual_str)
               
         with open(path.join(PATH_RESULTS, 'parsed_population.json'), "a") as f:
             json.dump(parsed_population_json, f, indent=2)
         
-        parsed_best_sequence = []
-        individual = population[index_best_score]
-        i = 0
-        while i < len(individual) -1:
-            parsed_best_sequence.append(str([individual[i]]))
-            i += 1
-            if individual[i - 1][1] == 9:
-                break
-        
-        with open(path.join(PATH_RESULTS, 'best_sequence.json'), "a") as f:
-            json.dump(parsed_best_sequence, f, indent=2)
+       
 
 if __name__ == '__main__':
 
