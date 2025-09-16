@@ -8,17 +8,22 @@ import argparse
 import numpy as np
 import pandas as pd
 import mlflow
+import os
 import sys
 import json
 from llm_action_planner import LLMActionPlanner
 from os import path
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from dotenv import load_dotenv, find_dotenv
+import urllib.request
+import urllib.error
+import signal
 
 sys.path.append(
     path.dirname(path.dirname(path.dirname(path.dirname(path.abspath(__file__)))))
 )
 
-from AIDojoCoordinator.game_components import AgentStatus
+from AIDojoCoordinator.game_components import AgentStatus, Action, ActionType
 from NetSecGameAgents.agents.base_agent import BaseAgent
 
 #mlflow.set_tracking_uri("http://147.32.83.60")
@@ -26,6 +31,16 @@ from NetSecGameAgents.agents.base_agent import BaseAgent
 
 
 if __name__ == "__main__":
+    # Load environment defaults (supports both local .env and inherited env)
+    try:
+        _THIS_DIR = path.dirname(path.abspath(__file__))
+        # Load local .env in agent folder (non‑overriding)
+        load_dotenv(path.join(_THIS_DIR, ".env"), override=False)
+        # Also search upwards for a .env if present
+        load_dotenv(find_dotenv(), override=False)
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--llm",
@@ -97,24 +112,31 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--max_tokens_limit",
+        type=int,
+        default=0,
+        help="If cumulative tokens across all episodes exceed this limit, terminate the run. 0 disables the limit.",
+    )
+
+    parser.add_argument(
         "--mlflow_tracking_uri",
         type=str,
-        default="http://147.32.83.60",
-        help="MLflow tracking server URI (default: %(default)s)",
+        default=os.getenv("MLFLOW_TRACKING_URI", "databricks"),
+        help="MLflow tracking server URI (default reads MLFLOW_TRACKING_URI or 'databricks')",
     )
 
     parser.add_argument(
         "--mlflow_experiment",
         type=str,
-        default="LLM_QA_netsecgame_dec2024",
-        help="MLflow experiment name (default: %(default)s)",
+        default=os.getenv("MLFLOW_EXPERIMENT", "/Shared/NetSecGame/UTEP_S1/Train1"),
+        help="MLflow experiment name or path (default reads MLFLOW_EXPERIMENT)",
     )
 
     parser.add_argument(
         "--mlflow_description",
         type=str,
-        default=None,
-        help="Optional description for MLflow run (default is generated)",
+        default=os.getenv("MLFLOW_DESCRIPTION", None),
+        help="Optional description for MLflow run (default reads MLFLOW_DESCRIPTION or is generated)",
     )
 
     parser.add_argument(
@@ -138,13 +160,73 @@ if __name__ == "__main__":
     logger.info("Start")
     agent = BaseAgent(args.host, args.port, "Attacker")
     
+    def _ensure_databricks_workspace_dir(dir_path: str) -> bool:
+        """Ensures a Databricks workspace directory exists using the Workspace API.
+        Returns True if the directory exists or was created, False otherwise.
+        """
+        host = os.getenv("DATABRICKS_HOST")
+        token = os.getenv("DATABRICKS_TOKEN")
+        if not host or not token or not dir_path:
+            return False
+        try:
+            url = f"{host.rstrip('/')}/api/2.0/workspace/mkdirs"
+            payload = json.dumps({"path": dir_path}).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                # 200/201 indicate success; 404 means base (/Shared) missing (unlikely)
+                return 200 <= resp.status < 300
+        except urllib.error.HTTPError as he:  # Already exists or other conditions
+            # If the directory already exists, Databricks may still respond 200.
+            # For other HTTP errors, we just return False to allow fallback logic.
+            logging.getLogger("llm_react").warning(
+                f"Databricks mkdirs for '{dir_path}' returned HTTP {he.code}: {he.reason}"
+            )
+            return False
+        except Exception as e:
+            logging.getLogger("llm_react").warning(
+                f"Failed ensuring Databricks dir '{dir_path}': {e}"
+            )
+            return False
+
     if not args.disable_mlflow:
         mlflow.set_tracking_uri(args.mlflow_tracking_uri)
-        mlflow.set_experiment(args.mlflow_experiment)
+
+        experiment_path = args.mlflow_experiment
+
+        # If using Databricks with a workspace path, ensure parent directory exists
+        if (args.mlflow_tracking_uri == "databricks") and experiment_path.startswith("/"):
+            parent_dir = os.path.dirname(experiment_path.rstrip("/"))
+            if parent_dir and parent_dir != "/":
+                _ensure_databricks_workspace_dir(parent_dir)
+
+        try:
+            mlflow.set_experiment(experiment_path)
+        except Exception as e:
+            msg = str(e)
+            logger.warning(f"mlflow.set_experiment failed for '{experiment_path}': {msg}")
+            # Fallback: if creating nested path under /Shared fails, flatten under /Shared
+            if experiment_path.startswith("/Shared/") and "Parent directory" in msg:
+                flattened = experiment_path[len("/Shared/"):].replace("/", "_")
+                fallback_path = f"/Shared/{flattened}"
+                logger.warning(
+                    f"Falling back to Databricks experiment path '{fallback_path}'"
+                )
+                mlflow.set_experiment(fallback_path)
+                experiment_path = fallback_path
+            else:
+                raise
 
         # Use custom description if given, otherwise build a default
         experiment_description = args.mlflow_description or (
-            f"{args.mlflow_experiment} | Model: {args.llm}"
+            f"{experiment_path} | Model: {args.llm}"
         )
 
         mlflow.start_run(description=experiment_description)
@@ -156,6 +238,7 @@ if __name__ == "__main__":
             "host": args.host,
             "port": args.port,
             "api_url": args.api_url,
+            "max_tokens_limit": args.max_tokens_limit,
         }
         mlflow.log_params(params)
         mlflow.set_tag("agent_role", "Attacker")
@@ -170,11 +253,39 @@ if __name__ == "__main__":
     num_detected_steps = []
     num_actions_repeated = []
     reward_memory = ""
+    total_tokens_used = 0
 
  
     # Create an empty DataFrame for storing prompts and responses, and evaluations
     #prompt_table = pd.DataFrame(columns=["state", "prompt", "response", "evaluation"])
     prompt_table = []
+
+    def _register_interrupt_saver(get_data_fn, filename: str = "episode_data.json") -> None:
+        """Register Ctrl-C handler to persist current episodes JSON before exiting."""
+        def _handler(signum, frame):
+            try:
+                data = get_data_fn()
+                with open(filename, "w") as json_file:
+                    json.dump(data, json_file, indent=4)
+                print(f"\nInterrupted (Ctrl-C). Saved {len(data)} episodes to {filename}.")
+            except Exception as e:
+                print(f"\nInterrupted (Ctrl-C). Failed to save data: {e}")
+            finally:
+                try:
+                    if not args.disable_mlflow:
+                        mlflow.set_tag("termination_reason", "keyboard_interrupt")
+                        mlflow.log_metric("total_tokens_at_termination", total_tokens_used)
+                        mlflow.end_run("KILLED")
+                except Exception:
+                    pass
+                os._exit(130)
+        signal.signal(signal.SIGINT, _handler)
+        try:
+            signal.signal(signal.SIGTERM, _handler)
+        except Exception:
+            pass
+
+    _register_interrupt_saver(lambda: prompt_table)
     
     # We are still not using this, but we keep track
     is_detected = False
@@ -183,6 +294,18 @@ if __name__ == "__main__":
     print("Registering")
     agent.register()
     print("Done")
+    # -------------------------------------------------------------
+    # Optional: On-demand topology randomization (new IPs once)
+    # To switch tasks to a new set of IPs, uncomment ONE or more of
+    # the following lines. Each uncommented line will request a reset
+    # with randomize_topology=True exactly once before episodes start.
+    # Requires the coordinator config to have `use_dynamic_addresses: True`.
+    agent.make_step(Action(ActionType.ResetGame, parameters={"randomize_topology": True}))  # 1) Randomize once before run
+    agent.make_step(Action(ActionType.ResetGame, parameters={"randomize_topology": True}))  # 2) Randomize once before run
+    agent.make_step(Action(ActionType.ResetGame, parameters={"randomize_topology": True}))  # 3) Randomize once before run
+    #agent.make_step(Action(ActionType.ResetGame, parameters={"randomize_topology": True}))  # 4) Randomize once before run
+    # agent.make_step(Action(ActionType.ResetGame, parameters={"randomize_topology": True}))  # 5) Randomize once before run
+    # -------------------------------------------------------------
     for episode in range(1, args.test_episodes + 1):
         actions_took_in_episode = []
         evaluations = [] # used for prompt table storage.
@@ -215,8 +338,39 @@ if __name__ == "__main__":
         for i in range(num_iterations):
             good_action = False
             #is_json_ok = True
-            is_valid, response_dict, action = llm_query.get_action_from_obs_react(observation, memories)
-            if is_valid:
+            is_valid, response_dict, action, tokens_used = llm_query.get_action_from_obs_react(observation, memories)
+
+            # Update and enforce token limit if configured
+            try:
+                total_tokens_used += int(tokens_used or 0)
+            except Exception:
+                pass
+            if args.max_tokens_limit > 0 and total_tokens_used > args.max_tokens_limit:
+                termination_message = (
+                    f"CRITICAL: Total token limit of {args.max_tokens_limit} reached "
+                    f"(cumulative total: {total_tokens_used}). Terminating run."
+                )
+                print(termination_message)
+                logger.critical(termination_message)
+
+                # Persist data collected so far
+                try:
+                    with open("episode_data.json", "w") as json_file:
+                        json.dump(prompt_table, json_file, indent=4)
+                except Exception:
+                    pass
+
+                if not args.disable_mlflow:
+                    try:
+                        mlflow.set_tag("termination_reason", "max_tokens_limit_exceeded")
+                        mlflow.log_param("termination_episode", episode)
+                        mlflow.log_metric("total_tokens_at_termination", total_tokens_used)
+                        mlflow.end_run("FAILED")
+                    except Exception:
+                        pass
+
+                sys.exit(1)
+            if is_valid and action is not None:
                 observation = agent.make_step(action)
                 logger.info(f"Observation received: {observation}")
                 taken_action = action
@@ -333,6 +487,7 @@ if __name__ == "__main__":
                     mlflow.log_metric("wins", wins, step=episode)
                     mlflow.log_metric("reached_max_steps", reach_max_steps, step=episode)
                     mlflow.log_metric("detected", detected, step=episode)
+                    mlflow.log_metric("total_tokens_used", total_tokens_used, step=episode)
 
                     # Running averages
                     mlflow.log_metric("win_rate", (wins / (episode)) * 100, step=episode)
@@ -393,6 +548,7 @@ if __name__ == "__main__":
         "test_std_detected_steps": test_std_detected_steps,
         "test_avg_repeated_steps": test_average_repeated_steps,
         "test_std_repeated_steps": test_std_repeated_steps,
+        "final_total_tokens_used": total_tokens_used,
     }
 
     if not args.disable_mlflow:
@@ -412,3 +568,18 @@ if __name__ == "__main__":
 
     print(text)
     logger.info(text)
+    
+    # Ensure resources are closed so the process can exit cleanly
+    try:
+        agent.terminate_connection()
+    except Exception:
+        pass
+
+    if not args.disable_mlflow:
+        try:
+            mlflow.end_run("FINISHED")
+        except Exception as e:
+            logger.warning(f"Failed to end MLflow run cleanly: {e}")
+
+    # Explicitly exit to avoid any lingering atexit handlers/threads from blocking
+    sys.exit(0)

@@ -22,12 +22,13 @@ import logging
 import json
 from dotenv import dotenv_values
 from openai import OpenAI
+from typing import Tuple
 from tenacity import retry, stop_after_attempt
 import jinja2
 
 import re
 from collections import Counter
-import validate_responses
+from . import validate_responses
 
 # Add parent directories dynamically
 sys.path.append(
@@ -75,7 +76,8 @@ class LLMActionPlanner:
 
         if "gpt" in self.model:
             env_config = dotenv_values(".env")
-            self.client = OpenAI(api_key=env_config["OPENAI_API_KEY"])
+            api_key = env_config.get("OPENAI_API_KEY")
+            self.client = OpenAI(api_key=api_key) if api_key else OpenAI()
         else:
             self.client = OpenAI(base_url=api_url, api_key="ollama")
 
@@ -114,7 +116,11 @@ class LLMActionPlanner:
         return prompt
 
     @retry(stop=stop_after_attempt(3))
-    def openai_query(self, msg_list: list, max_tokens: int = 60, model: str = None, fmt=None, temperature: float = 0.0):
+    def openai_query(self, msg_list: list, max_tokens: int = 60, model: str = None, fmt=None, temperature: float = 0.0) -> Tuple[str, int]:
+        """Calls the chat completion API and returns (content, tokens_used).
+
+        tokens_used is 0 when usage information is unavailable (e.g., some local backends).
+        """
         llm_response = self.client.chat.completions.create(
             model=model or self.model,
             messages=msg_list,
@@ -122,7 +128,13 @@ class LLMActionPlanner:
             temperature=temperature,
             response_format=fmt or {"type": "text"},
         )
-        return llm_response.choices[0].message.content
+        content = llm_response.choices[0].message.content
+        try:
+            usage = getattr(llm_response, "usage", None)
+            tokens_used = getattr(usage, "total_tokens", 0) if usage is not None else 0
+        except Exception:
+            tokens_used = 0
+        return content, tokens_used
 
     def parse_response_deprecated(self, llm_response: str, state: Observation.state):
         try:
@@ -164,6 +176,9 @@ class LLMActionPlanner:
         except KeyError:
             self.logger.error("Missing keys in LLM response.")
         
+        # Extra guard: if we couldn't construct an Action object, treat as invalid
+        if valid and action is None:
+            valid = False
         return valid, response_dict, action
 
     def remove_reasoning(self, text):
@@ -182,17 +197,20 @@ class LLMActionPlanner:
         return repetitions
 
     def get_self_consistent_response(self, messages, temp=0.4, max_tokens=1024, n=3):
+        """Returns (best_content, tokens_used_sum) using simple majority among n samples."""
         candidates = []
+        tokens_acc = 0
         for _ in range(n):
-            response = self.openai_query(messages, temperature=temp, max_tokens=max_tokens)
+            response, used = self.openai_query(messages, temperature=temp, max_tokens=max_tokens)
+            tokens_acc += used
             candidates.append(response.strip())
 
         counts = Counter(candidates)
         most_common = counts.most_common(1)
         if most_common:
             self.logger.info(f"Self-consistency candidates: {counts}")
-            return most_common[0][0]  # return most common answer
-        return candidates[0]  # fallback
+            return most_common[0][0], tokens_acc
+        return candidates[0], tokens_acc
 
     def get_action_from_obs_react(self, observation: Observation, memory_buf: list) -> tuple:
         self.states.append(observation.state.as_json())
@@ -203,6 +221,7 @@ class LLMActionPlanner:
         memory_prompt = self.create_mem_prompt(memory_buf)
 
         repetitions = self.check_repetition(memory_buf)
+        tokens_used_total = 0
         messages = [
             {"role": "user", "content": self.instructions},
             {"role": "user", "content": status_prompt},
@@ -212,9 +231,11 @@ class LLMActionPlanner:
         self.logger.info(f"Text sent to the LLM: {messages}")
 
         if self.use_self_consistency:
-            response = self.get_self_consistent_response(messages, temp=repetitions/9, max_tokens=1024)
+            response, used = self.get_self_consistent_response(messages, temp=repetitions/9, max_tokens=1024)
+            tokens_used_total += used
         else:
-            response = self.openai_query(messages, max_tokens=1024)
+            response, used = self.openai_query(messages, max_tokens=1024)
+            tokens_used_total += used
 
         if self.use_reflection:
             reflection_prompt = [
@@ -236,7 +257,8 @@ class LLMActionPlanner:
                     """
                 }
             ]
-            response = self.openai_query(reflection_prompt, max_tokens=1024)
+            response, used = self.openai_query(reflection_prompt, max_tokens=1024)
+            tokens_used_total += used
         #print("response after reflection: ",response)
 
         # Optional: parse response if reasoning is expected and outputs <think> ... </think>
@@ -255,23 +277,44 @@ class LLMActionPlanner:
             {"role": "user", "content": q4},
         ]
         self.prompts.append(messages)
-        response = self.openai_query(messages, max_tokens=80, fmt={"type": "json_object"})
-        
-        validated, error_msg = validate_responses.validate_agent_response(response)
+        response, used = self.openai_query(messages, max_tokens=80, fmt={"type": "json_object"})
+        tokens_used_total += used
+
+        # Build minimal context for validator
+        # - known_data_map: known data by source host
+        # - known_services_map: discovered service names by host
+        ctx = {"known_data_map": {}, "known_services_map": {}}
+        try:
+            for ip_data, data_set in observation.state.known_data.items():
+                ctx["known_data_map"][str(ip_data)] = [
+                    {"owner": getattr(d, "owner", None), "id": getattr(d, "id", None)}
+                    for d in list(data_set)
+                ]
+            for ip_srv, srv_set in observation.state.known_services.items():
+                ctx["known_services_map"][str(ip_srv)] = [getattr(s, "name", None) for s in list(srv_set)]
+        except Exception:
+            pass
+
+        validated, error_msg = validate_responses.validate_agent_response(response, context=ctx)
         if validated is None:
             self.logger.info(f"Invalid response format: {response} - Error: {error_msg}")
             try:
                 parsed_response = json.loads(response)
             except json.JSONDecodeError:
                 parsed_response = response
-
-            response = json.dumps({
-                "action": "InvalidResponse",
-                "parameters": {
-                    "error": error_msg,
-                    "original": parsed_response
-                }
-            }, indent=2)
+            response = json.dumps(
+                {
+                    "action": "InvalidResponse",
+                    "parameters": {
+                        "error": error_msg,
+                        "original": parsed_response,
+                    },
+                },
+                indent=2,
+            )
+        else:
+            # Use normalized/validated structure going forward
+            response = json.dumps(validated)
 
         if self.use_reasoning:
             response = self.remove_reasoning(response)
@@ -279,4 +322,5 @@ class LLMActionPlanner:
         self.responses.append(response)
         self.logger.info(f"(Stage 2) Response from LLM: {response}")
         print(f"(Stage 2) Response from LLM: {response}")
-        return self.parse_response(response, observation.state)
+        valid, response_dict, action = self.parse_response(response, observation.state)
+        return valid, response_dict, action, tokens_used_total
